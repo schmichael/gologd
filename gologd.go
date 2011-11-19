@@ -1,3 +1,4 @@
+// Copyright 2011 Michael Schurter, BSD licensed
 package main
 
 import (

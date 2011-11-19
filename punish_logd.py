@@ -1,3 +1,4 @@
+"""Copyright 2011 Urban Airship"""
 import errno
 import os
 import signal
