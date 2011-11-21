@@ -2,6 +2,7 @@
 package main
 
 import (
+    "bufio"
     "flag"
     "log"
     "net"
@@ -49,17 +50,16 @@ func main() {
 
     // Wait for new connections
     log.Printf("Listening on %s:%s", sock.Addr().Network(), sock.Addr().String())
-    done := make(chan int)
-    go listen(sock, logChan, done)
+    go listen(sock, logChan)
     select {
     case <-signal.Incoming:
         log.Println("Sig")
-    case <-done:
+        //TODO Check for SIGHUP and pass REOPEN to logger
     }
     log.Println("Done, exiting")
 }
 
-func listen(sock net.Listener, logChan chan []byte, done chan int) {
+func listen(sock net.Listener, logChan chan []byte) {
     for {
         client, err := sock.Accept()
         if err != nil {
@@ -73,7 +73,6 @@ func listen(sock net.Listener, logChan chan []byte, done chan int) {
             go handle(client, logChan)
         }
     }
-    done <- 1
 }
 
 func handle(client net.Conn, logChan chan []byte) {
@@ -91,31 +90,35 @@ func handle(client net.Conn, logChan chan []byte) {
 }
 
 
-func openLog() *os.File {
+func openLog() (*os.File, *bufio.Writer) {
     // Open log file
     logf, err := os.OpenFile(
         *log_filename, os.O_WRONLY | os.O_APPEND | os.O_CREATE, 0664)
     if err != nil {
         log.Fatalf("Error opening file %s:\n%v", *log_filename, err)
     }
-    return logf
+    buflogf, err := bufio.NewWriterSize(logf, BUFFER_SZ+1)
+    if err != nil {
+        log.Fatalf("Error creating log buffer %s:\n%v", *log_filename, err)
+    }
+    return logf, buflogf
 }
 
 func logger(controlc chan int, logc chan []byte) {
-    logf := openLog()
+    logf, logbuf := openLog()
     run := true
     for run {
         select {
         case data := <-logc:
-            logf.Write(data)
+            logbuf.Write(data)
             //FIXME This has to be the slowest way to append a newline
-            logf.WriteString("\n")
+            logbuf.WriteString("\n")
         case sig := <-controlc:
             switch sig {
             case LOGGER_REOPEN:
                 logf.Sync()
                 logf.Close()
-                logf = openLog()
+                logf, logbuf = openLog()
             case LOGGER_QUIT:
                 run = false
             }
