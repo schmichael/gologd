@@ -6,6 +6,9 @@ import (
     "log"
     "net"
     "os"
+    "os/signal"
+    "runtime"
+    "runtime/pprof"
 )
 
 const BUFFER_SZ = 4096
@@ -14,8 +17,20 @@ const LOGGER_QUIT = 2
 
 var sock_addr = flag.String("sock", "golog.sock", "Unix domain socket filename")
 var log_filename = flag.String("log", "log.out", "Log file")
+var maxprocs = flag.Int("procs", 1, "Processes to use")
+var cpuprofile = flag.String("prof", "", "Profile CPU")
 
 func main() {
+    flag.Parse()
+    if *cpuprofile != "" {
+        f, err := os.Create(*cpuprofile)
+        if err != nil {
+            log.Fatal(err)
+        }
+        pprof.StartCPUProfile(f)
+        defer pprof.StopCPUProfile()
+    }
+    runtime.GOMAXPROCS(*maxprocs)
     // Open Socket
     os.Remove(*sock_addr)
     sock, err := net.Listen("unixpacket", *sock_addr)
@@ -36,8 +51,12 @@ func main() {
     log.Printf("Listening on %s:%s", sock.Addr().Network(), sock.Addr().String())
     done := make(chan int)
     go listen(sock, logChan, done)
-    <-done
-    log.Print("Done, exiting")
+    select {
+    case <-signal.Incoming:
+        log.Println("Sig")
+    case <-done:
+    }
+    log.Println("Done, exiting")
 }
 
 func listen(sock net.Listener, logChan chan []byte, done chan int) {

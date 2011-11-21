@@ -85,6 +85,7 @@ def main():
     else:
         print 'usage: %s <concurrency> <messages> <url> [logd pid]' % (
                 sys.argv[0],)
+        sys.exit(1)
     concurrency = int(concurrency)
     messages = int(messages)
     logd_pid = int(logd_pid)
