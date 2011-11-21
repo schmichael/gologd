@@ -104,12 +104,13 @@ func openLog() (*os.File, *bufio.Writer) {
 func logger(controlc chan int, logc chan []byte) {
     logf, logbuf := openLog()
     run := true
+    newline := []byte("\n")
     for run {
         select {
         case data := <-logc:
             logbuf.Write(data)
             //FIXME This has to be the slowest way to append a newline
-            logbuf.WriteString("\n")
+            logbuf.Write(newline)
         case sig := <-controlc:
             switch sig {
             case LOGGER_REOPEN:
