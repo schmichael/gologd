@@ -97,10 +97,7 @@ func openLog() (*os.File, *bufio.Writer) {
     if err != nil {
         log.Fatalf("Error opening file %s:\n%v", *log_filename, err)
     }
-    buflogf, err := bufio.NewWriterSize(logf, BUFFER_SZ+1)
-    if err != nil {
-        log.Fatalf("Error creating log buffer %s:\n%v", *log_filename, err)
-    }
+    buflogf := bufio.NewWriter(logf)
     return logf, buflogf
 }
 
