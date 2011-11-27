@@ -12,6 +12,8 @@ import (
     "runtime/pprof"
 )
 
+const SIGHUP = 1
+
 const BUFFER_SZ = 4096
 const LOGGER_REOPEN = 1
 const LOGGER_QUIT = 2
@@ -49,12 +51,20 @@ func main() {
     go logger(logControlChan, logChan)
 
     // Wait for new connections
-    log.Printf("Listening on %s:%s", sock.Addr().Network(), sock.Addr().String())
+    log.Printf("Listening on %s:%s (%d)", sock.Addr().Network(), sock.Addr().String(), os.Getpid())
     go listen(sock, logChan)
-    select {
-    case <-signal.Incoming:
-        log.Println("Sig")
-        //TODO Check for SIGHUP and pass REOPEN to logger
+    run := true
+    for run {
+        select {
+        case sig := <-signal.Incoming:
+            signum := int32(sig.(os.UnixSignal))
+            log.Printf("Signal: %s", sig.String())
+            if signum == SIGHUP {
+                logControlChan <- LOGGER_REOPEN
+            } else {
+                run = false
+            }
+        }
     }
     log.Println("Done, exiting")
 }
@@ -76,24 +86,27 @@ func listen(sock net.Listener, logChan chan []byte) {
 }
 
 func handle(client net.Conn, logChan chan []byte) {
+    defer client.Close()
     buf := make([]byte, BUFFER_SZ)
     for {
         sz, err := client.Read(buf)
-        if err != nil {
+        if err == os.EOF {
+            log.Println("Client disconnected")
+            break
+        } else if err != nil {
             log.Printf("Error reading from client %s:\n%v",
                     client.RemoteAddr().String(), err)
             break
         }
         logChan <- buf[:sz]
     }
-    client.Close()
 }
 
 
 func openLog() (*os.File, *bufio.Writer) {
     // Open log file
     logf, err := os.OpenFile(
-        *log_filename, os.O_WRONLY | os.O_APPEND | os.O_CREATE, 0664)
+        *log_filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0664)
     if err != nil {
         log.Fatalf("Error opening file %s:\n%v", *log_filename, err)
     }
@@ -109,14 +122,15 @@ func logger(controlc chan int, logc chan []byte) {
         select {
         case data := <-logc:
             logbuf.Write(data)
-            //FIXME This has to be the slowest way to append a newline
             logbuf.Write(newline)
         case sig := <-controlc:
             switch sig {
             case LOGGER_REOPEN:
+                logbuf.Flush()
                 logf.Sync()
                 logf.Close()
                 logf, logbuf = openLog()
+                log.Printf("Reopened log file: %s", *log_filename)
             case LOGGER_QUIT:
                 run = false
             }
