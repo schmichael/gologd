@@ -2,7 +2,6 @@
 package main
 
 import (
-    "bufio"
     "flag"
     "log"
     "net"
@@ -15,6 +14,7 @@ import (
 
 const SIGHUP = 1
 
+const NUM_BUFFERS = 100
 const BUFFER_SZ = 4096
 const LOGGER_REOPEN = 1
 const LOGGER_QUIT = 2
@@ -25,6 +25,7 @@ var maxprocs = flag.Int("procs", 1, "Processes to use")
 var cpuprofile = flag.String("prof", "", "Profile CPU")
 var run = true
 var wg = new(sync.WaitGroup)
+var bufferQueue = make(chan []byte, NUM_BUFFERS)
 
 func main() {
     flag.Parse()
@@ -46,17 +47,20 @@ func main() {
     }
 
     sock, err := net.ListenUnix("unixpacket", addr)
-    defer os.Remove(*sock_addr)
-
     if err != nil {
         log.Fatalf("Error listening on socket:\n%v", err)
     }
-
+    defer os.Remove(*sock_addr)
     defer sock.Close()
+
+    // Fill buffer queue
+    for i := 0; i < NUM_BUFFERS; i++ {
+        bufferQueue <- make([]byte, BUFFER_SZ)
+    }
 
     // Start logger goroutine w/a control chan & log chan
     logControlChan := make(chan int)
-    logChan := make(chan []byte)
+    logChan := make(chan []byte, 1000)
     go logger(logControlChan, logChan)
 
     // Wait for new connections
@@ -99,6 +103,7 @@ func listen(sock *net.UnixListener, logChan chan []byte) {
                 break
             }
         } else {
+            wg.Add(1)
             go handle(client, logChan)
         }
     }
@@ -109,8 +114,8 @@ func handle(client net.Conn, logChan chan []byte) {
     defer wg.Done()
     // Timeout after 2 seconds
     client.SetTimeout(2e9)
-    buf := make([]byte, BUFFER_SZ)
     for run {
+        buf := <-bufferQueue
         sz, err := client.Read(buf)
         if err == os.EOF {
             log.Println("Client disconnected")
@@ -125,36 +130,33 @@ func handle(client net.Conn, logChan chan []byte) {
 }
 
 
-func openLog() (*os.File, *bufio.Writer) {
+func openLog() *os.File {
     // Open log file
     logf, err := os.OpenFile(
         *log_filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0664)
     if err != nil {
         log.Fatalf("Error opening file %s:\n%v", *log_filename, err)
     }
-    buflogf := bufio.NewWriter(logf)
-    return logf, buflogf
+    return logf
 }
 
 func logger(controlc chan int, logc chan []byte) {
-    logf, logbuf := openLog()
-    defer logbuf.Flush()
+    logf := openLog()
     defer logf.Sync()
     defer logf.Close()
     defer wg.Done()
-    newline := []byte("\n")
+    newline := ([]byte("\n"))[0]
     for run {
         select {
         case data := <-logc:
-            logbuf.Write(data)
-            logbuf.Write(newline)
+            logf.Write(append(data, newline))
+            bufferQueue <-data
         case sig := <-controlc:
             switch sig {
             case LOGGER_REOPEN:
-                logbuf.Flush()
                 logf.Sync()
                 logf.Close()
-                logf, logbuf = openLog()
+                logf = openLog()
                 log.Printf("Reopened log file: %s", *log_filename)
             case LOGGER_QUIT:
                 break
