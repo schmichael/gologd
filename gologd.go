@@ -10,6 +10,7 @@ import (
     "os/signal"
     "runtime"
     "runtime/pprof"
+    "sync"
 )
 
 const SIGHUP = 1
@@ -22,6 +23,8 @@ var sock_addr = flag.String("sock", "golog.sock", "Unix domain socket filename")
 var log_filename = flag.String("log", "log.out", "Log file")
 var maxprocs = flag.Int("procs", 1, "Processes to use")
 var cpuprofile = flag.String("prof", "", "Profile CPU")
+var run = true
+var wg = new(sync.WaitGroup)
 
 func main() {
     flag.Parse()
@@ -36,7 +39,13 @@ func main() {
     runtime.GOMAXPROCS(*maxprocs)
     // Open Socket
     os.Remove(*sock_addr)
-    sock, err := net.Listen("unixpacket", *sock_addr)
+
+    addr, err := net.ResolveUnixAddr("unixpacket", *sock_addr)
+    if err != nil {
+        log.Fatalf("Error resolving socket:\n%v", err)
+    }
+
+    sock, err := net.ListenUnix("unixpacket", addr)
     defer os.Remove(*sock_addr)
 
     if err != nil {
@@ -51,14 +60,14 @@ func main() {
     go logger(logControlChan, logChan)
 
     // Wait for new connections
-    log.Printf("Listening on %s:%s (%d)", sock.Addr().Network(), sock.Addr().String(), os.Getpid())
+    log.Printf("Listening on %s:%s (%d)", sock.Addr().Network(), sock.Addr(), os.Getpid())
     go listen(sock, logChan)
-    run := true
+    wg.Add(1)
     for run {
         select {
         case sig := <-signal.Incoming:
             signum := int32(sig.(os.UnixSignal))
-            log.Printf("Signal: %s", sig.String())
+            log.Printf("Signal: %s", sig)
             if signum == SIGHUP {
                 logControlChan <- LOGGER_REOPEN
             } else {
@@ -66,17 +75,27 @@ func main() {
             }
         }
     }
+    log.Println("Letting clients timeout...")
+    wg.Wait()
+    log.Println("Closing logger...")
+    wg.Add(1)
+    logControlChan <- LOGGER_QUIT
+    wg.Wait()
     log.Println("Done, exiting")
 }
 
-func listen(sock net.Listener, logChan chan []byte) {
-    for {
+func listen(sock *net.UnixListener, logChan chan []byte) {
+    defer sock.Close()
+    defer wg.Done()
+    // Timeout after 2 seconds
+    sock.SetTimeout(2e9)
+    for run {
         client, err := sock.Accept()
         if err != nil {
-            if ne, ok := err.(net.Error); ok && ne.Temporary() {
-                log.Printf("Error accepting client:\n%v", err)
-            } else {
+            ne, ok := err.(net.Error)
+            if !ok || !ne.Temporary() {
                 // Non-temporary (fatal) error
+                log.Printf("Error accepting client:\n%v", err)
                 break
             }
         } else {
@@ -87,15 +106,18 @@ func listen(sock net.Listener, logChan chan []byte) {
 
 func handle(client net.Conn, logChan chan []byte) {
     defer client.Close()
+    defer wg.Done()
+    // Timeout after 2 seconds
+    client.SetTimeout(2e9)
     buf := make([]byte, BUFFER_SZ)
-    for {
+    for run {
         sz, err := client.Read(buf)
         if err == os.EOF {
             log.Println("Client disconnected")
             break
         } else if err != nil {
             log.Printf("Error reading from client %s:\n%v",
-                    client.RemoteAddr().String(), err)
+                    client.RemoteAddr(), err)
             break
         }
         logChan <- buf[:sz]
@@ -116,7 +138,10 @@ func openLog() (*os.File, *bufio.Writer) {
 
 func logger(controlc chan int, logc chan []byte) {
     logf, logbuf := openLog()
-    run := true
+    defer logbuf.Flush()
+    defer logf.Sync()
+    defer logf.Close()
+    defer wg.Done()
     newline := []byte("\n")
     for run {
         select {
@@ -132,7 +157,7 @@ func logger(controlc chan int, logc chan []byte) {
                 logf, logbuf = openLog()
                 log.Printf("Reopened log file: %s", *log_filename)
             case LOGGER_QUIT:
-                run = false
+                break
             }
         }
     }
