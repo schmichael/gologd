@@ -70,6 +70,7 @@ def spawn(con, num, url, logd_pid):
                 raise
             return True
 
+    
     if logd_pid:
         for i in range(20):
             os.kill(logd_pid, signal.SIGHUP)
